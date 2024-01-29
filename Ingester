@@ -1,0 +1,427 @@
+import os
+# import pandas as pd
+from pymongo import MongoClient
+from datetime import datetime
+import phonenumbers
+from validate_email_address import validate_email
+import json
+
+# Connect to MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['Database_Leaks']
+collection = db['Test']
+
+# Define the base schema
+base_obj = {
+    "id": "",
+    "username": "",
+    "email": "",
+    "password": "",
+    "password_hash": "",
+    "name": "",
+    "dob": "",
+    "phone": "",
+    "address": "",
+    "source": "",
+    "breach_date": "",
+    "domainName": "",
+    "others": ""
+}
+
+chunk_size = 5000
+max_file_size = 300 * 1024 * 1024  # 200 MB in bytes
+
+# Placeholder function for transforming CSV data
+def transform_csv_data(row):
+    return {
+        "id": str(row.get('id', '')),
+        "username": str(row.get('username', '')),
+        "email": str(row.get('email', '')),
+        "password": str(row.get('password', '')),
+        "password_hash": str(row.get('password_hash', '')),
+        "name": str(row.get('name', '')),
+        "dob": str(row.get('dob', '')),
+        "phone": str(row.get('phone', '')),
+        "address": str(row.get('address', '')),
+        "source": "",
+        "breach_date": "",
+        "domainName": "",
+        "others": ""
+    }
+
+# Function to process a single CSV file
+def process_csv(file_path, delimiter, breach_date, source_name, chunk_size):
+    documents = []  # List to store documents
+    skipped = 0
+    skipped_lines = []
+
+    for chunk in pd.read_csv(file_path, delimiter=delimiter, chunksize=chunk_size):
+        for index, row in chunk.iterrows():
+            try:
+                record = transform_csv_data(row)
+                record['source'] = source_name
+                record['breach_date'] = breach_date
+                documents.append(record)
+            except Exception as e:
+                skipped += 1
+                skipped_lines.append(str(e))
+
+        if len(documents) == chunk_size:
+            print('Inserting chunk...')
+            collection.insert_many(documents)
+            documents = []
+
+    if documents:
+        print('Inserting remaining documents...')
+        collection.insert_many(documents)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
+
+# Function to process a single SQL file
+def print_tablename(file_path):
+
+    with open(file_path, 'r', encoding='latin-1') as file:
+        for line in file:
+            arr = line.split('(')
+            if arr:
+                get_table = line.split('(')[0]
+                if "CREATE TABLE" in get_table:
+                    print(get_table.strip())
+                    print(arr[1].strip())
+
+    # process_sql(file_path, pattern, chunk_size, breach_date, source_name)
+
+def process_sql(file_path, pattern, chunk_size, breach_date, source_name,tablename):
+    with open(file_path, 'r', encoding='latin-1') as file:
+        users = []
+        email_position = 0
+        password_position = 0
+        flag = False
+        newflag=False
+        cnt = -1
+        email=''
+        password=''
+        new_arr=[]
+        for line in file:
+            arr = line.split('(')
+            # print(line)
+            email=''
+            password=''
+
+            if arr:
+                get_table = line.split('(')[0]
+                table = get_table.split(' ')
+                # print("table--",table[len(table)-3])
+
+                # print("gettable",get_table)
+
+                if "CREATE TABLE" in get_table and tablename in get_table:
+                    print(get_table)
+                    flag = True
+
+                if flag and cnt < 20:
+                    if "email" in line and email_position == 0:
+                        email_position = cnt
+
+                    if "password" in line and password_position == 0:
+                        password_position = cnt
+
+                    cnt += 1
+                if arr is not None and tablename in get_table and flag:
+                    new_arr = arr[1].split(',') if len(arr) > 1 else []
+                    # newflag=True
+                else:
+                    if arr is not None and flag:
+                        new_arr = arr[1].split(',') if len(arr) > 1 else []
+                        # newflag=True
+
+                # print(new_arr)
+                if(flag and newflag):
+                    if "CREATE TABLE" in get_table:
+                        flag=False
+
+                if new_arr:
+
+                    for i in new_arr:
+                        # hashed = pwutil.hash_password(i)
+                        # tempass=(pwutil.extract_algorythm(hashed)) 
+                        # print(i)
+                        i =i.replace("'", "").strip()
+                        if is_valid_email(i):
+                            email=i
+
+                            # print("email-address",i)
+                        # j =i.replace("'", "").strip()
+                        # print(j)
+                        # if len(j)>20:
+                            # print("woking j",j)  
+                        # if is_valid_hash(j):
+                            # print("hash_password--",j)  
+
+                        
+                        try:
+                            phone_number = phonenumbers.parse(i, None)  
+
+                        except Exception as e:
+                            # print(e)
+                            continue
+
+                        if phonenumbers.is_valid_number(phone_number):
+                            print(i)
+                           
+
+                # if(flag)
+
+
+
+
+                # print("email--",email,"password--",password)
+                # print("newarr",new_arr)
+
+                # print("newarr",new_arr)
+                # if flag:
+
+                    # email = new_arr[email_position].strip() if len(new_arr) > email_position else None
+
+                    # password = new_arr[password_position].strip() if len(new_arr) > password_position else None
+
+                if email and '@' in email:
+                    newflag=True
+                    domain_name = email.split('@')[1]
+                else:
+                    continue
+
+                base_obj = {
+                    "id": "",
+                    "username": "",
+                    "email": email,
+                    "password": password if password and len(password) < 16 else "",
+                    "password_hash": password if password and len(password) > 16 else "",
+                    "name": "",
+                    "dob": "",
+                    "phone": "",
+                    "address": "",
+                    "source": source_name,
+                    "domainName": domain_name,
+                    "breach_date": breach_date,
+                    "others": "",
+                }
+
+                users.append(base_obj)
+
+                if len(users) >= chunk_size:
+                    insert_users(users)
+                    users.clear()
+
+        if users:
+            insert_users(users)
+            print('User data inserted successfully.')
+        else:
+            print('No user data found in the file.')
+
+
+def insert_users(users):
+    print("workig in user")
+    collection.insert_many(users)
+# Function to process a single JSON file
+def process_json_file(file_path, chunk_size, breach_date, source_name, find_emails_and_passwords, insert_users):
+    with open(file_path, 'r', encoding='utf-8') as json_file:
+        json_data = json.load(json_file)
+
+    users = find_emails_and_passwords(json_data)
+
+    for user in users:
+        user['source'] = source_name
+        user['breach_date'] = breach_date
+
+    insert_users(users)
+
+    print('Processed', file_path)
+    print('Inserted', len(users), 'documents.')
+
+# Function to process a single TXT file
+def process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
+    documents = []  # List to store documents
+    skipped = 0
+    skipped_lines = []
+
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        print('Processing', file_path)
+        cnt = 0
+        chunk_count = 0  # Initialize chunk count
+        for line in file:
+            cnt = cnt + 1
+            line = line.strip()
+            if delimiter in line:  # Check if the specified delimiter is in the line
+                email, password = line.split(delimiter, 1)  # Split based on the specified delimiter
+                domain_name = email.split('@')[-1]  # Extract domain name from email
+
+                record = base_obj.copy()
+                record['email'] = email
+                if len(password) >= 16:
+                    record['password_hash'] = password
+                else:
+                    record['password'] = password
+                record['source'] = source_name
+                record['domainName'] = domain_name
+                record['breach_date'] = breach_date
+
+                documents.append(record)
+            else:
+                skipped += 1
+                skipped_lines.append(line)
+
+            if len(documents) == chunk_size:
+                chunk_count += 1  # Increment chunk count
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+                documents = []  # Reset the documents list
+
+        if documents:
+            chunk_count += 1  # Increment chunk count
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+
+    print('Processed', file_path)
+    print('Skipped', skipped)
+
+    # Write skipped lines to a separate file
+    if skipped_lines:
+        output_folder = 'SkippedLines'
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        file_name = os.path.basename(file_path)
+        new_file_path = os.path.join(output_folder, f'unexpected_{file_name}')
+        with open(new_file_path, 'w', encoding='utf-8') as saved_lines_file:
+            saved_lines_file.write('\n'.join(skipped_lines))
+
+# Function to process a single file based on its extension
+def process_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
+    # Determine the file type based on the extension
+    file_extension = os.path.splitext(file_path)[1].lower()
+
+    # Check if the file size exceeds the maximum allowed
+    if os.path.getsize(file_path) > max_file_size:
+
+        print("working in if")
+        print_tablename(file_path)
+
+        split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+    else:
+        print("working")
+        if file_extension == '.csv':
+            # Process CSV file
+            process_csv(file_path, delimiter, breach_date, source_name, chunk_size)
+        elif file_extension == '.json':
+            # Process JSON file
+            process_json_file(file_path, chunk_size, breach_date, source_name)
+        elif file_extension == '.sql':
+            print_tablename(file_path)
+            tablename = input("Enter the table name: ")
+            print(tablename)
+            # Process SQL file
+            process_sql(file_path, pattern, chunk_size, breach_date, source_name,tablename)
+            # print_tablename(file_path)
+        elif file_extension == '.txt':
+            print("in working")
+            # Process TXT file
+            process_txt_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name)
+        else:
+            print(f"Unsupported file type: {file_extension}")
+
+# Function to insert documents into MongoDB and create new collections if needed
+def insert_into_mongodb(documents, chunk_count, breach_date, source_name):
+    current_collection = get_collection_name(chunk_count, breach_date, source_name)
+    collection = db[current_collection]
+    collection.insert_many(documents)
+    print(f'Inserted into collection: {current_collection}, Documents: {len(documents)}')
+
+# Function to get the current collection name based on chunk count, breach date, and source name
+def get_collection_name(chunk_count, breach_date, source_name):
+    return f'{source_name}_{breach_date}_chunk{chunk_count}'
+
+# Function to split a large file into chunks and process each chunk
+def split_and_process_large_file(file_path, delimiter, pattern, chunk_size, breach_date, source_name):
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+        chunk_count = 0
+        documents = []
+
+        for line in file:
+            if delimiter in line:
+                email, password = line.split(delimiter, 1)
+                domain_name = email.split('@')[-1]
+
+                record = base_obj.copy()
+                record['email'] = email
+                if len(password) >= 16:
+                    record['password_hash'] = password
+                else:
+                    record['password'] = password
+                record['source'] = source_name
+                record['domainName'] = domain_name
+                record['breach_date'] = breach_date
+
+                documents.append(record)
+
+            if len(documents) == chunk_size:
+                chunk_count += 1
+                insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+                documents = []
+
+        if documents:
+            chunk_count += 1
+            insert_into_mongodb(documents, chunk_count, breach_date, source_name)
+
+# Function to check if an email address is valid
+def is_valid_email(email):
+    return validate_email(email)
+
+# Prompt user for delimiter for text files
+delimiter = input("Enter the delimiter for text files (default is ':'): ")
+if not delimiter:
+    delimiter = ":"
+
+# Prompt user for folder or file path
+path = input("Enter the file or folder path: ")
+
+# Check if the path is a directory
+if os.path.isdir(path):
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Iterate over files in the directory
+    for filename in os.listdir(path):
+        file_path = os.path.join(path, filename)
+        process_file(file_path, delimiter, source_name, chunk_size, breach_date, source_name)
+else:
+    # Get the current date
+    current_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Prompt user for breach date
+    breach_date = input(f"Enter the breach date (default is '{current_date}'): ") or current_date
+
+    # Prompt user for source name
+    source_name = input("Enter the source name: ")
+
+    # Process a single file
+    process_file(path, delimiter, source_name, chunk_size, breach_date, source_name)
+
+# Disconnect from MongoDB
+client.close()
+print('Done!')
